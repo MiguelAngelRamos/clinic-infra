@@ -1,0 +1,431 @@
+# ============================================================
+#  k8s/kong.yaml
+#  Despliega Kong en modo DB-less en el namespace clinic.
+#
+#  Cómo funciona:
+#    1. El kong.yaml se monta como ConfigMap en el Pod de Kong
+#    2. Kong arranca en modo declarativo leyendo ese archivo
+#    3. Sin base de datos — toda la config vive en el ConfigMap
+#
+#  Para actualizar la config de Kong:
+#    kubectl create configmap kong-config \
+#      --from-file=kong/kong.yaml \
+#      --namespace clinic \
+#      --dry-run=client -o yaml | kubectl apply -f -
+#    kubectl rollout restart deployment/kong -n clinic
+# ============================================================
+
+# ---- ConfigMap — configuración declarativa de Kong ----------
+# El contenido de kong.yaml se monta en el Pod como archivo
+# IMPORTANTE: el secreto JWT real va en un Secret, no aquí
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kong-config
+  namespace: clinic
+  annotations:
+    # Recordatorio: actualizar este ConfigMap requiere rollout restart
+    update-strategy: "kubectl rollout restart deployment/kong -n clinic"
+data:
+  # El kong.yaml se incrusta aquí como string multilínea
+  # En producción se haría con --from-file en CI/CD
+  kong.yaml: |
+    _format_version: "3.0"
+    _transform: true
+
+    services:
+      - name: auth-service
+        url: http://auth-service:3001
+        connect_timeout: 5000
+        read_timeout: 10000
+        write_timeout: 10000
+        retries: 2
+        routes:
+          - name: auth-public
+            paths: ["/auth/register", "/auth/login", "/auth/refresh"]
+            methods: [POST]
+            strip_path: false
+          - name: auth-protected
+            paths: ["/auth/logout", "/auth/validate"]
+            methods: [GET, POST]
+            strip_path: false
+            plugins:
+              - name: jwt
+                config:
+                  secret_is_base64: false
+                  claims_to_verify: [exp]
+                  key_claim_name: iss
+              - name: request-transformer
+                config:
+                  add:
+                    headers:
+                      - "X-User-Id:$(jwt.claims.sub)"
+                      - "X-User-Role:$(jwt.claims.role)"
+                      - "X-User-Email:$(jwt.claims.email)"
+
+      - name: user-service
+        url: http://user-service:3002
+        connect_timeout: 5000
+        read_timeout: 10000
+        write_timeout: 10000
+        retries: 2
+        routes:
+          - name: users-health
+            paths: ["/users/health"]
+            methods: [GET]
+            strip_path: false
+          - name: users-api
+            paths: ["/users"]
+            methods: [GET, POST, PATCH, DELETE]
+            strip_path: false
+            plugins:
+              - name: jwt
+                config:
+                  secret_is_base64: false
+                  claims_to_verify: [exp]
+                  key_claim_name: iss
+              - name: request-transformer
+                config:
+                  add:
+                    headers:
+                      - "X-User-Id:$(jwt.claims.sub)"
+                      - "X-User-Role:$(jwt.claims.role)"
+                      - "X-User-Email:$(jwt.claims.email)"
+
+      - name: patient-service
+        url: http://patient-service:3003
+        connect_timeout: 5000
+        read_timeout: 10000
+        write_timeout: 10000
+        retries: 2
+        routes:
+          - name: patients-health
+            paths: ["/patients/health"]
+            methods: [GET]
+            strip_path: false
+          - name: patients-api
+            paths: ["/patients"]
+            methods: [GET, POST, PATCH, DELETE]
+            strip_path: false
+            plugins:
+              - name: jwt
+                config:
+                  secret_is_base64: false
+                  claims_to_verify: [exp]
+                  key_claim_name: iss
+              - name: request-transformer
+                config:
+                  add:
+                    headers:
+                      - "X-User-Id:$(jwt.claims.sub)"
+                      - "X-User-Role:$(jwt.claims.role)"
+                      - "X-User-Email:$(jwt.claims.email)"
+
+      - name: doctor-service
+        url: http://doctor-service:3004
+        connect_timeout: 5000
+        read_timeout: 10000
+        write_timeout: 10000
+        retries: 2
+        routes:
+          - name: specialties-health
+            paths: ["/specialties/health"]
+            methods: [GET]
+            strip_path: false
+          - name: specialties-api
+            paths: ["/specialties"]
+            methods: [GET, POST, PATCH, DELETE]
+            strip_path: false
+            plugins:
+              - name: jwt
+                config:
+                  secret_is_base64: false
+                  claims_to_verify: [exp]
+                  key_claim_name: iss
+              - name: request-transformer
+                config:
+                  add:
+                    headers:
+                      - "X-User-Id:$(jwt.claims.sub)"
+                      - "X-User-Role:$(jwt.claims.role)"
+                      - "X-User-Email:$(jwt.claims.email)"
+          - name: doctors-api
+            paths: ["/doctors"]
+            methods: [GET, POST, PATCH, DELETE]
+            strip_path: false
+            plugins:
+              - name: jwt
+                config:
+                  secret_is_base64: false
+                  claims_to_verify: [exp]
+                  key_claim_name: iss
+              - name: request-transformer
+                config:
+                  add:
+                    headers:
+                      - "X-User-Id:$(jwt.claims.sub)"
+                      - "X-User-Role:$(jwt.claims.role)"
+                      - "X-User-Email:$(jwt.claims.email)"
+
+      - name: appointment-service
+        url: http://appointment-service:3005
+        connect_timeout: 5000
+        read_timeout: 15000
+        write_timeout: 15000
+        retries: 2
+        routes:
+          - name: appointments-health
+            paths: ["/appointments/health"]
+            methods: [GET]
+            strip_path: false
+          - name: appointments-api
+            paths: ["/appointments"]
+            methods: [GET, POST, PATCH]
+            strip_path: false
+            plugins:
+              - name: jwt
+                config:
+                  secret_is_base64: false
+                  claims_to_verify: [exp]
+                  key_claim_name: iss
+              - name: request-transformer
+                config:
+                  add:
+                    headers:
+                      - "X-User-Id:$(jwt.claims.sub)"
+                      - "X-User-Role:$(jwt.claims.role)"
+                      - "X-User-Email:$(jwt.claims.email)"
+              - name: rate-limiting
+                config:
+                  minute: 30
+                  policy: local
+                  limit_by: consumer
+
+    plugins:
+      - name: correlation-id
+        config:
+          header_name: X-Request-ID
+          generator: uuid
+          echo_downstream: true
+      - name: cors
+        config:
+          origins:
+            - "http://192.168.1.28:8000"
+            - "http://localhost:4200"
+          methods: [GET, POST, PATCH, DELETE, OPTIONS]
+          headers: [Accept, Authorization, Content-Type, X-Request-ID]
+          exposed_headers: [X-Request-ID]
+          credentials: true
+          max_age: 3600
+
+    consumers:
+      - username: clinic-auth-service
+        jwt_secrets:
+          - key: clinic-auth
+            algorithm: HS256
+            secret: $(KONG_JWT_SECRET)
+
+---
+# ---- Secret — secreto JWT para que Kong valide tokens ------
+# El secreto debe coincidir con JWT_SECRET del auth-service
+# Se crea con kubectl — nunca con valores reales en YAML:
+#
+#   kubectl create secret generic kong-jwt-secret \
+#     --namespace clinic \
+#     --from-literal=KONG_JWT_SECRET=<mismo valor que JWT_SECRET del auth-service>
+#
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kong-jwt-secret
+  namespace: clinic
+type: Opaque
+# stringData:              ← NO descomentar — crear con kubectl
+#   KONG_JWT_SECRET: ""   ← valor vacío como referencia
+
+---
+# ---- Deployment — Kong Gateway ------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kong
+  namespace: clinic
+spec:
+  replicas: 1                    # 1 réplica en el laboratorio
+  selector:
+    matchLabels:
+      app: kong
+  template:
+    metadata:
+      labels:
+        app: kong
+    spec:
+      initContainers:
+        # Init container: sustituye $(KONG_JWT_SECRET) en kong.yaml
+        # antes de que arranque Kong
+        - name: config-init
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              sed "s/\$(KONG_JWT_SECRET)/$KONG_JWT_SECRET/g" \
+                /kong-config/kong.yaml > /kong-dbless/kong.yaml
+              echo "Configuración de Kong preparada"
+          env:
+            - name: KONG_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: kong-jwt-secret
+                  key: KONG_JWT_SECRET
+          volumeMounts:
+            - name: kong-config
+              mountPath: /kong-config
+            - name: kong-dbless
+              mountPath: /kong-dbless
+      containers:
+        - name: kong
+          # Kong OSS — imagen oficial
+          image: kong:3.6-ubuntu
+          ports:
+            - name: proxy
+              containerPort: 8000     # tráfico HTTP de clientes
+            - name: proxy-ssl
+              containerPort: 8443     # tráfico HTTPS (no usado en lab)
+            - name: admin
+              containerPort: 8001     # Admin API (solo interno)
+          env:
+            # Modo DB-less — sin base de datos
+            - name: KONG_DATABASE
+              value: "off"
+            # Archivo de configuración declarativa
+            - name: KONG_DECLARATIVE_CONFIG
+              value: "/kong-dbless/kong.yaml"
+            # Plugins habilitados
+            - name: KONG_PLUGINS
+              value: "bundled"
+            # Log level — info en producción, debug en desarrollo
+            - name: KONG_LOG_LEVEL
+              value: "info"
+            # Proxy escucha en 0.0.0.0
+            - name: KONG_PROXY_LISTEN
+              value: "0.0.0.0:8000"
+            # Admin API solo en localhost — no exponer externamente
+            - name: KONG_ADMIN_LISTEN
+              value: "127.0.0.1:8001"
+          volumeMounts:
+            - name: kong-dbless
+              mountPath: /kong-dbless
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: 8001
+              host: 127.0.0.1
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: 8001
+              host: 127.0.0.1
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+      volumes:
+        # ConfigMap con el kong.yaml declarativo
+        - name: kong-config
+          configMap:
+            name: kong-config
+        # Volumen en memoria para el config procesado por el init container
+        - name: kong-dbless
+          emptyDir: {}
+
+---
+# ---- Service — expone Kong al Ingress -----------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong
+  namespace: clinic
+spec:
+  selector:
+    app: kong
+  ports:
+    - name: proxy
+      port: 8000          # puerto del proxy Kong
+      targetPort: 8000
+
+---
+# ---- Ingress — enruta TODO el tráfico externo a Kong --------
+# Ya no hay rutas directas a los microservicios
+# Todo pasa por Kong primero
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: clinic-ingress
+  namespace: clinic
+  annotations:
+    # Timeout más alto para las operaciones de citas
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          # /auth/* → Kong → auth-service
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service:
+                name: kong
+                port:
+                  number: 8000
+          # /users/* → Kong → user-service
+          - path: /users
+            pathType: Prefix
+            backend:
+              service:
+                name: kong
+                port:
+                  number: 8000
+          # /patients/* → Kong → patient-service
+          - path: /patients
+            pathType: Prefix
+            backend:
+              service:
+                name: kong
+                port:
+                  number: 8000
+          # /specialties/* → Kong → doctor-service
+          - path: /specialties
+            pathType: Prefix
+            backend:
+              service:
+                name: kong
+                port:
+                  number: 8000
+          # /doctors/* → Kong → doctor-service
+          - path: /doctors
+            pathType: Prefix
+            backend:
+              service:
+                name: kong
+                port:
+                  number: 8000
+          # /appointments/* → Kong → appointment-service
+          - path: /appointments
+            pathType: Prefix
+            backend:
+              service:
+                name: kong
+                port:
+                  number: 8000

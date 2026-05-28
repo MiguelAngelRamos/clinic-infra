@@ -1,0 +1,21 @@
+# ─── Secrets — NUNCA versionar ───────────────────────────────
+*.env
+.env*
+secrets/
+*-secret.yaml
+*-secrets.yaml
+
+# ─── OS & editor ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.sw?
+
+# ─── Helm ────────────────────────────────────────────────────
+charts/*/charts/
+*.tgz
+
+# ─── Temporal ────────────────────────────────────────────────
+tmp/
+.cache/

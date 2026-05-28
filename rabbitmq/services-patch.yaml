@@ -1,0 +1,38 @@
+# ============================================================
+#  clinic-infra/rabbitmq/services-patch.yaml
+#
+#  Las variables RABBITMQ_HOST, RABBITMQ_PORT, RABBITMQ_VHOST
+#  ya están aplicadas en los ConfigMaps de auth-service.yaml
+#  y user-service.yaml.
+#
+#  Este archivo documenta los comandos kubectl patch equivalentes
+#  para aplicar las variables de Secret (RABBITMQ_USER/PASSWORD)
+#  a los Deployments si se prefiere hacerlo imperativamente
+#  en lugar de editar los YAML.
+# ============================================================
+
+# ---- Patch imperativo — añadir credenciales RabbitMQ --------
+#
+# auth-service Deployment:
+#
+#   kubectl patch deployment auth-service -n clinic \
+#     --type json -p '[
+#       {"op":"add","path":"/spec/template/spec/containers/0/env/-",
+#        "value":{"name":"RABBITMQ_USER","valueFrom":{"secretKeyRef":{"name":"rabbitmq-secret","key":"RABBITMQ_USER"}}}},
+#       {"op":"add","path":"/spec/template/spec/containers/0/env/-",
+#        "value":{"name":"RABBITMQ_PASSWORD","valueFrom":{"secretKeyRef":{"name":"rabbitmq-secret","key":"RABBITMQ_PASSWORD"}}}}
+#     ]'
+#
+# user-service Deployment:
+#
+#   kubectl patch deployment user-service -n clinic \
+#     --type json -p '[
+#       {"op":"add","path":"/spec/template/spec/containers/0/env/-",
+#        "value":{"name":"RABBITMQ_USER","valueFrom":{"secretKeyRef":{"name":"rabbitmq-secret","key":"RABBITMQ_USER"}}}},
+#       {"op":"add","path":"/spec/template/spec/containers/0/env/-",
+#        "value":{"name":"RABBITMQ_PASSWORD","valueFrom":{"secretKeyRef":{"name":"rabbitmq-secret","key":"RABBITMQ_PASSWORD"}}}}
+#     ]'
+#
+# NOTA: El Secret rabbitmq-secret ya existe en K8s creado por
+# External Secrets Operator desde Vault (clinic/rabbitmq).
+# NO crear otro Secret manualmente.

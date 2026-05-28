@@ -1,0 +1,357 @@
+# ============================================================
+#  kong/kong.yaml
+#  Configuración declarativa de Kong (DB-less mode)
+#
+#  Kong es el punto de entrada único al sistema.
+#  Responsabilidades:
+#    - Validar JWT antes de enrutar
+#    - Inyectar headers X-User-Id, X-User-Role, X-User-Email
+#    - Rate limiting diferenciado por ruta
+#    - CORS centralizado
+#    - Correlation ID para trazabilidad
+#
+#  Servicios internos K8s (DNS del clúster):
+#    auth-service:3001
+#    user-service:3002
+#    patient-service:3003
+#    doctor-service:3004
+#    appointment-service:3005
+# ============================================================
+_format_version: "3.0"
+_transform: true
+
+# ============================================================
+#  SERVICIOS
+#  Cada servicio apunta al Service de K8s correspondiente.
+#  El nombre del Service es el hostname DNS interno del clúster.
+# ============================================================
+services:
+
+  # ---- auth-service -----------------------------------------
+  - name: auth-service
+    url: http://auth-service:3001
+    connect_timeout: 5000
+    read_timeout: 10000
+    write_timeout: 10000
+    retries: 2
+
+    routes:
+      # POST /auth/register — público, rate limit estricto
+      - name: auth-register
+        paths: ["/auth/register"]
+        methods: [POST]
+        strip_path: false
+        plugins:
+          # Rate limit: 5 registros por 10 minutos por IP
+          - name: rate-limiting
+            config:
+              minute: null
+              hour: null
+              policy: local
+              limit_by: ip
+              second: null
+              day: null
+              header_name: null
+              path: null
+              # 5 requests cada 10 minutos = 0.5/min
+              # Kong no tiene ttl en minutos — usamos hour con 30
+              hour: 30
+
+      # POST /auth/login — público, rate limit anti brute force
+      - name: auth-login
+        paths: ["/auth/login"]
+        methods: [POST]
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 5
+              policy: local
+              limit_by: ip
+
+      # POST /auth/refresh — público (cookie), rate limit moderado
+      - name: auth-refresh
+        paths: ["/auth/refresh"]
+        methods: [POST]
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 10
+              policy: local
+              limit_by: ip
+
+      # POST /auth/logout — requiere JWT
+      - name: auth-logout
+        paths: ["/auth/logout"]
+        methods: [POST]
+        strip_path: false
+        plugins:
+          - name: jwt
+            config:
+              secret_is_base64: false
+              claims_to_verify: [exp, nbf]
+              key_claim_name: iss
+          - name: request-transformer
+            config:
+              add:
+                headers:
+                  - "X-User-Id:$(jwt.claims.sub)"
+                  - "X-User-Role:$(jwt.claims.role)"
+                  - "X-User-Email:$(jwt.claims.email)"
+
+      # GET /auth/validate — endpoint interno
+      # Solo accesible desde dentro del clúster — no expuesto externamente
+      - name: auth-validate
+        paths: ["/auth/validate"]
+        methods: [GET]
+        strip_path: false
+        # Sin plugin JWT — Kong mismo llama a este endpoint para validar
+
+  # ---- user-service -----------------------------------------
+  - name: user-service
+    url: http://user-service:3002
+    connect_timeout: 5000
+    read_timeout: 10000
+    write_timeout: 10000
+    retries: 2
+
+    routes:
+      # GET /users/health — público para K8s probes
+      - name: users-health
+        paths: ["/users/health"]
+        methods: [GET]
+        strip_path: false
+
+      # Todas las rutas de /users — requieren JWT
+      - name: users-api
+        paths: ["/users"]
+        methods: [GET, POST, PATCH, DELETE]
+        strip_path: false
+        plugins:
+          - name: jwt
+            config:
+              secret_is_base64: false
+              claims_to_verify: [exp]
+              key_claim_name: iss
+          - name: request-transformer
+            config:
+              add:
+                headers:
+                  - "X-User-Id:$(jwt.claims.sub)"
+                  - "X-User-Role:$(jwt.claims.role)"
+                  - "X-User-Email:$(jwt.claims.email)"
+          - name: rate-limiting
+            config:
+              minute: 60
+              policy: local
+              limit_by: consumer
+
+  # ---- patient-service --------------------------------------
+  - name: patient-service
+    url: http://patient-service:3003
+    connect_timeout: 5000
+    read_timeout: 10000
+    write_timeout: 10000
+    retries: 2
+
+    routes:
+      # GET /patients/health — público
+      - name: patients-health
+        paths: ["/patients/health"]
+        methods: [GET]
+        strip_path: false
+
+      # Todas las rutas de /patients — requieren JWT
+      - name: patients-api
+        paths: ["/patients"]
+        methods: [GET, POST, PATCH, DELETE]
+        strip_path: false
+        plugins:
+          - name: jwt
+            config:
+              secret_is_base64: false
+              claims_to_verify: [exp]
+              key_claim_name: iss
+          - name: request-transformer
+            config:
+              add:
+                headers:
+                  - "X-User-Id:$(jwt.claims.sub)"
+                  - "X-User-Role:$(jwt.claims.role)"
+                  - "X-User-Email:$(jwt.claims.email)"
+          - name: rate-limiting
+            config:
+              minute: 60
+              policy: local
+              limit_by: consumer
+
+  # ---- doctor-service ---------------------------------------
+  - name: doctor-service-doctors
+    url: http://doctor-service:3004
+    connect_timeout: 5000
+    read_timeout: 10000
+    write_timeout: 10000
+    retries: 2
+
+    routes:
+      # GET /specialties/health — público
+      - name: specialties-health
+        paths: ["/specialties/health"]
+        methods: [GET]
+        strip_path: false
+
+      # GET /specialties — catálogo público (cualquier autenticado)
+      - name: specialties-api
+        paths: ["/specialties"]
+        methods: [GET, POST, PATCH, DELETE]
+        strip_path: false
+        plugins:
+          - name: jwt
+            config:
+              secret_is_base64: false
+              claims_to_verify: [exp]
+              key_claim_name: iss
+          - name: request-transformer
+            config:
+              add:
+                headers:
+                  - "X-User-Id:$(jwt.claims.sub)"
+                  - "X-User-Role:$(jwt.claims.role)"
+                  - "X-User-Email:$(jwt.claims.email)"
+          - name: rate-limiting
+            config:
+              minute: 60
+              policy: local
+              limit_by: consumer
+
+      # /doctors — perfiles médicos
+      - name: doctors-api
+        paths: ["/doctors"]
+        methods: [GET, POST, PATCH, DELETE]
+        strip_path: false
+        plugins:
+          - name: jwt
+            config:
+              secret_is_base64: false
+              claims_to_verify: [exp]
+              key_claim_name: iss
+          - name: request-transformer
+            config:
+              add:
+                headers:
+                  - "X-User-Id:$(jwt.claims.sub)"
+                  - "X-User-Role:$(jwt.claims.role)"
+                  - "X-User-Email:$(jwt.claims.email)"
+          - name: rate-limiting
+            config:
+              minute: 60
+              policy: local
+              limit_by: consumer
+
+  # ---- appointment-service ----------------------------------
+  - name: appointment-service
+    url: http://appointment-service:3005
+    connect_timeout: 5000
+    # Timeout más alto — las citas hacen 2 llamadas HTTP internas
+    read_timeout: 15000
+    write_timeout: 15000
+    retries: 2
+
+    routes:
+      # GET /appointments/health — público
+      - name: appointments-health
+        paths: ["/appointments/health"]
+        methods: [GET]
+        strip_path: false
+
+      # Todas las rutas de /appointments — requieren JWT
+      - name: appointments-api
+        paths: ["/appointments"]
+        methods: [GET, POST, PATCH]
+        strip_path: false
+        plugins:
+          - name: jwt
+            config:
+              secret_is_base64: false
+              claims_to_verify: [exp]
+              key_claim_name: iss
+          - name: request-transformer
+            config:
+              add:
+                headers:
+                  - "X-User-Id:$(jwt.claims.sub)"
+                  - "X-User-Role:$(jwt.claims.role)"
+                  - "X-User-Email:$(jwt.claims.email)"
+          # Rate limit más estricto en citas — operación costosa
+          - name: rate-limiting
+            config:
+              minute: 30
+              policy: local
+              limit_by: consumer
+
+# ============================================================
+#  PLUGINS GLOBALES
+#  Se aplican a TODAS las rutas automáticamente
+# ============================================================
+plugins:
+
+  # Correlation ID — genera X-Request-ID único por petición
+  # Todos los microservicios lo propagan en sus logs
+  # Permite reconstruir el flujo completo de una petición
+  - name: correlation-id
+    config:
+      header_name: X-Request-ID
+      generator: uuid
+      echo_downstream: true   # el cliente recibe el ID en la respuesta
+
+  # CORS global — centralizado en Kong, no en cada microservicio
+  - name: cors
+    config:
+      origins:
+        - "http://192.168.1.28:8000"   # frontend en el laboratorio
+        - "http://localhost:4200"       # dev local Angular
+      methods:
+        - GET
+        - POST
+        - PATCH
+        - DELETE
+        - OPTIONS
+      headers:
+        - Accept
+        - Authorization
+        - Content-Type
+        - X-Request-ID
+      exposed_headers:
+        - X-Request-ID
+      credentials: true
+      max_age: 3600
+
+  # Prometheus — métricas de Kong para monitoreo
+  - name: prometheus
+    config:
+      per_consumer: true
+      status_code_metrics: true
+      latency_metrics: true
+      bandwidth_metrics: true
+      upstream_health_metrics: true
+
+# ============================================================
+#  CONSUMIDORES JWT
+#  Kong necesita un consumidor con el secreto JWT para
+#  verificar las firmas de los tokens emitidos por auth-service.
+#
+#  El secreto debe coincidir exactamente con JWT_SECRET
+#  del auth-service.
+#
+#  En producción: reemplazar el valor del key por el secreto real
+#  o usar Kong Vault para inyectarlo de forma segura.
+# ============================================================
+consumers:
+  - username: clinic-auth-service
+    jwt_secrets:
+      - key: clinic-auth          # debe coincidir con JWT_ISSUER del auth-service
+        algorithm: HS256
+        # El secreto real se inyecta via ConfigMap/Secret de K8s
+        # Ver k8s/kong.yaml para cómo se monta el archivo de configuración
+        secret: REEMPLAZAR_CON_JWT_SECRET

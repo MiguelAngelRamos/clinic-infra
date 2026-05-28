@@ -1,0 +1,258 @@
+# ============================================================
+#  clinic-infra/rabbitmq/rabbitmq.yaml
+#  RabbitMQ broker — Namespace: clinic
+#
+#  El Secret rabbitmq-secret ya existe en K8s creado por
+#  External Secrets Operator desde Vault (clinic/rabbitmq).
+#  Keys: RABBITMQ_USER, RABBITMQ_PASSWORD
+#
+#  Orden de aplicación:
+#    1. kubectl apply -f rabbitmq.yaml
+#    2. kubectl apply -f services-patch.yaml
+# ============================================================
+
+# ---- ConfigMap — configuración del broker ------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+  namespace: clinic
+data:
+  rabbitmq.conf: |
+    default_vhost = clinic
+    heartbeat = 60
+    consumer_timeout = 3600000
+    management.load_definitions = /etc/rabbitmq/definitions.json
+    log.console = true
+    log.console.level = info
+
+  definitions.json: |
+    {
+      "vhosts": [
+        { "name": "clinic" }
+      ],
+      "users": [],
+      "permissions": [
+        {
+          "user": "clinic_user",
+          "vhost": "clinic",
+          "configure": ".*",
+          "write": ".*",
+          "read": ".*"
+        }
+      ],
+      "exchanges": [
+        {
+          "name": "clinic.events",
+          "vhost": "clinic",
+          "type": "topic",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": { "alternate-exchange": "clinic.events.dlx" }
+        },
+        {
+          "name": "clinic.events.dlx",
+          "vhost": "clinic",
+          "type": "fanout",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {}
+        }
+      ],
+      "queues": [
+        {
+          "name": "user.registered",
+          "vhost": "clinic",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {
+            "x-dead-letter-exchange": "clinic.events.dlx",
+            "x-message-ttl": 86400000
+          }
+        },
+        {
+          "name": "user.deactivated",
+          "vhost": "clinic",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {
+            "x-dead-letter-exchange": "clinic.events.dlx",
+            "x-message-ttl": 86400000
+          }
+        },
+        {
+          "name": "doctor.deactivated",
+          "vhost": "clinic",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {
+            "x-dead-letter-exchange": "clinic.events.dlx",
+            "x-message-ttl": 86400000
+          }
+        },
+        {
+          "name": "appointment.confirmed",
+          "vhost": "clinic",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {
+            "x-dead-letter-exchange": "clinic.events.dlx",
+            "x-message-ttl": 86400000
+          }
+        },
+        {
+          "name": "clinic.events.dead-letter",
+          "vhost": "clinic",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {}
+        }
+      ],
+      "bindings": [
+        {
+          "source": "clinic.events",
+          "vhost": "clinic",
+          "destination": "user.registered",
+          "destination_type": "queue",
+          "routing_key": "user.registered",
+          "arguments": {}
+        },
+        {
+          "source": "clinic.events",
+          "vhost": "clinic",
+          "destination": "user.deactivated",
+          "destination_type": "queue",
+          "routing_key": "user.deactivated",
+          "arguments": {}
+        },
+        {
+          "source": "clinic.events",
+          "vhost": "clinic",
+          "destination": "doctor.deactivated",
+          "destination_type": "queue",
+          "routing_key": "doctor.deactivated",
+          "arguments": {}
+        },
+        {
+          "source": "clinic.events",
+          "vhost": "clinic",
+          "destination": "appointment.confirmed",
+          "destination_type": "queue",
+          "routing_key": "appointment.confirmed",
+          "arguments": {}
+        },
+        {
+          "source": "clinic.events.dlx",
+          "vhost": "clinic",
+          "destination": "clinic.events.dead-letter",
+          "destination_type": "queue",
+          "routing_key": "#",
+          "arguments": {}
+        }
+      ]
+    }
+
+---
+# ---- PVC — persistencia de mensajes y metadatos ------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rabbitmq-pvc
+  namespace: clinic
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+
+---
+# ---- Deployment — RabbitMQ ---------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: clinic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.13-management-alpine
+          ports:
+            - containerPort: 5672
+              name: amqp
+            - containerPort: 15672
+              name: management
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secret
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secret
+                  key: RABBITMQ_PASSWORD
+            - name: RABBITMQ_DEFAULT_VHOST
+              value: "clinic"
+          volumeMounts:
+            - name: rabbitmq-data
+              mountPath: /var/lib/rabbitmq
+            - name: rabbitmq-config
+              mountPath: /etc/rabbitmq/rabbitmq.conf
+              subPath: rabbitmq.conf
+            - name: rabbitmq-config
+              mountPath: /etc/rabbitmq/definitions.json
+              subPath: definitions.json
+          readinessProbe:
+            exec:
+              command: [rabbitmq-diagnostics, ping]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            exec:
+              command: [rabbitmq-diagnostics, ping]
+            initialDelaySeconds: 40
+            periodSeconds: 15
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 150m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: rabbitmq-data
+          persistentVolumeClaim:
+            claimName: rabbitmq-pvc
+        - name: rabbitmq-config
+          configMap:
+            name: rabbitmq-config
+
+---
+# ---- Service — AMQP (5672) y management UI (15672) ---------
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: clinic
+spec:
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: management
+      port: 15672
+      targetPort: 15672
