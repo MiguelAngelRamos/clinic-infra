@@ -317,24 +317,24 @@ spec:
             # Admin API solo en localhost — no exponer externamente
             - name: KONG_ADMIN_LISTEN
               value: "127.0.0.1:8001"
+            - name: KONG_NGINX_WORKER_PROCESSES
+              value: "2"
           volumeMounts:
             - name: kong-dbless
               mountPath: /kong-dbless
           readinessProbe:
-            httpGet:
-              path: /status
-              port: 8001
-              host: 127.0.0.1
-            initialDelaySeconds: 15
-            periodSeconds: 10
-            failureThreshold: 5
-          livenessProbe:
-            httpGet:
-              path: /status
-              port: 8001
-              host: 127.0.0.1
-            initialDelaySeconds: 30
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 40
+            timeoutSeconds: 10
             periodSeconds: 15
+            failureThreshold: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 60
+            timeoutSeconds: 10
+            periodSeconds: 30
             failureThreshold: 5
           resources:
             requests:
@@ -342,7 +342,7 @@ spec:
               memory: 256Mi
             limits:
               cpu: 1000m
-              memory: 512Mi
+              memory: 1Gi
       volumes:
         # ConfigMap con el kong.yaml declarativo
         - name: kong-config
