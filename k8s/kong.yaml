@@ -41,6 +41,10 @@ data:
         write_timeout: 10000
         retries: 2
         routes:
+          - name: auth-health
+            paths: ["/auth/health"]
+            methods: [GET]
+            strip_path: false
           - name: auth-public
             paths: ["/auth/register", "/auth/login", "/auth/refresh"]
             methods: [POST]
