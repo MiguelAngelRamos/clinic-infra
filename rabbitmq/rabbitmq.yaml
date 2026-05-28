@@ -31,16 +31,6 @@ data:
       "vhosts": [
         { "name": "clinic" }
       ],
-      "users": [],
-      "permissions": [
-        {
-          "user": "clinic_user",
-          "vhost": "clinic",
-          "configure": ".*",
-          "write": ".*",
-          "read": ".*"
-        }
-      ],
       "exchanges": [
         {
           "name": "clinic.events",
@@ -203,6 +193,8 @@ spec:
                   key: RABBITMQ_PASSWORD
             - name: RABBITMQ_DEFAULT_VHOST
               value: "clinic"
+            - name: RABBITMQ_CONFIG_FILE
+              value: "/etc/rabbitmq/rabbitmq.conf"
           volumeMounts:
             - name: rabbitmq-data
               mountPath: /var/lib/rabbitmq
@@ -214,15 +206,17 @@ spec:
               subPath: definitions.json
           readinessProbe:
             exec:
-              command: [rabbitmq-diagnostics, ping]
-            initialDelaySeconds: 20
+              command: [rabbitmq-diagnostics, -q, ping]
+            initialDelaySeconds: 30
+            timeoutSeconds: 15
             periodSeconds: 10
-            failureThreshold: 5
+            failureThreshold: 10
           livenessProbe:
             exec:
-              command: [rabbitmq-diagnostics, ping]
-            initialDelaySeconds: 40
-            periodSeconds: 15
+              command: [rabbitmq-diagnostics, -q, ping]
+            initialDelaySeconds: 60
+            timeoutSeconds: 15
+            periodSeconds: 30
             failureThreshold: 5
           resources:
             requests:
